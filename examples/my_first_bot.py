@@ -4,16 +4,20 @@ This bot uses a simple strategy:
 - Pass the three highest-ranked cards
 - Always play the lowest legal card
 
-To test it, run a tournament against the built-in bots
-(from the project root):
+To test it, run a tournament against the built-in bots:
 
-    pip install -e .
     python examples/my_first_bot.py
 """
 
+import os
 import random
+import sys
 
-from hearts.bot import Bot
+sys.path.insert(
+    0, os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+)
+
+from hearts.bot import Bot  # noqa: E402
 from hearts.bots.random_bot import RandomBot
 from hearts.bots.rule_bot import RuleBot
 from hearts.state import PassView, PlayerView
