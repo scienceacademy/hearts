@@ -7,10 +7,6 @@ card-playing agents.
 
 Requires Python 3.11+.
 
-```bash
-pip install -e ".[dev,ml]"
-```
-
 ## Rules Summary
 
 Hearts is a 4-player trick-taking game where the goal is to **avoid points**.
