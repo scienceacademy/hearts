@@ -130,6 +130,9 @@ class PlayerView:
     pass_direction: PassDirection
     cards_received_in_pass: list[Card]
     legal_plays: list[Card]
+    cumulative_scores: list[int] = field(
+        default_factory=lambda: [0, 0, 0, 0]
+    )
 
 
 @dataclass

@@ -171,6 +171,7 @@ class Round:
                     self._cards_received[player]
                 ),
                 legal_plays=legal,
+                cumulative_scores=list(self._cumulative_scores),
             )
 
             card = self._bots[player].play_card(view)
