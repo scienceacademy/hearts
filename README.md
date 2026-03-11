@@ -67,9 +67,17 @@ print(result.summary())
 
 ## Running Tests
 
+Run a game with your bot versus 3 RuleBots:
 ```bash
-pytest
+python scripts/play_game.py your_bots_name RuleBot RuleBot RuleBot
 ```
+
+## Submit a bot
+
+```bash
+submit50 scienceacademy/problems/2025ap/hearts
+```
+
 
 ## Project Structure
 

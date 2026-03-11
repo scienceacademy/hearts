@@ -233,34 +233,31 @@ Create `hearts/tournament.py`:
 
 ## Tier 2: Classical ML Framework
 
+**Student context:** This is students' first ML course. They understand Python but have not used scikit-learn, numpy, or ML concepts before. The documentation is a teaching tool, not just a reference. Students will **only** modify `hearts/ml/features.py` — the model (RandomForestClassifier) and training pipeline are fixed. Their sole task is feature engineering: deciding what information from `PlayerView` to encode as numbers, and how.
+
 ### Step 9: Game Data Generation & Storage
 
 Create `hearts/data/generator.py` and `hearts/data/schema.py`:
 
-- **Data schema** — for each decision point, store:
-  - **Common features** (shared context):
-    - Round number, pass direction
-    - Current scores (all 4 players, both this round and cumulative)
-    - Cards already played this round (could be encoded as 52-bit vector)
-    - Hearts broken flag
-  - **For `play_card` decisions:**
-    - Hand (52-bit binary vector: 1 if card in hand)
-    - Current trick cards and positions
-    - Legal plays (52-bit mask)
-    - Trick number (1–13)
-    - Player's seat position relative to lead
-    - **Label/target**: card that was played
-    - **Outcome** (for reward signals): points taken this trick, final round score, game result
-  - **For `pass_cards` decisions:**
-    - Hand before passing (52-bit vector)
-    - **Label/target**: the 3 cards passed
-    - **Outcome**: round score, game result
+- **Data schema** — each record represents one `play_card` decision point and stores:
+  - **The full `PlayerView`** serialized as JSON (all fields — hand, trick_so_far, cards_played_this_round, points_taken_by_player, etc.). This is the raw input that feature extractors will read.
+  - **Label/target**: the card index (0–51) that was played
+  - **Outcome annotations** (added after the game completes):
+    - `points_this_trick`: int (points in the trick where this card was played)
+    - `round_score`: int (this player's total points for the round)
+    - `game_rank`: int (1–4, this player's finishing position in the game)
 
-- **Generator**: runs N games with RuleBot (or mixed bots), serializes every decision point to JSON Lines format
+- **Pass decision data** (separate file, for optional extension only):
+  - The full `PassView` serialized as JSON
+  - Label: the 3 card indices passed
+  - Outcome: round score, game rank
+
+- **Generator architecture**: uses a `RecordingBot` wrapper that wraps any `Bot` instance, intercepts `pass_cards` and `play_card` calls, records the `PassView`/`PlayerView` and the chosen action, then delegates to the inner bot. The generator wraps the `Game` class to run N complete games. After each game completes, it annotates each recorded decision with outcome data from `GameResult`/`RoundResult`. Serializes to JSON Lines format.
 - **Output location**: `data/output/` directory (gitignored). Default filenames: `play_decisions.jsonl` and `pass_decisions.jsonl`
-- Generate a provided dataset: ~10,000 games → ~520,000 play decisions + ~40,000 pass decisions
+- **Script** (`scripts/generate_data.py`): CLI with `--games` (default 10000), `--output-dir` (default `data/output/`), `--seed` for reproducibility. Runs 4× RuleBot by default.
+- Pre-generate a provided dataset: ~10,000 games → ~520,000 play decisions + ~40,000 pass decisions
 
-**Tests:** Schema validation, generated data can be loaded and shapes are correct.
+**Tests:** Schema validation, generated data can be loaded and all expected fields are present, round-trip: load a record and reconstruct a valid `PlayerView` from it.
 
 ---
 
@@ -268,49 +265,74 @@ Create `hearts/data/generator.py` and `hearts/data/schema.py`:
 
 Create `hearts/ml/features.py`:
 
-- `FeatureExtractor` base class with method `extract(view: PlayerView) -> np.ndarray`
-- **Provided example** `BasicFeatureExtractor`:
-  - Hand as 52-dim binary vector
+This is **the file students edit**. It must be clear, well-commented, and approachable for someone who has never written ML code.
+
+- `FeatureExtractor` base class:
+  - `extract(view: PlayerView) -> np.ndarray`: convert a player view into a numeric vector
+  - `feature_names() -> list[str]`: return human-readable names for each dimension (used by evaluation to report feature importance). Must match length of `extract()` output.
+
+- **`BasicFeatureExtractor`** (provided, working, ~165 features):
+  - Hand as 52-dim binary vector (1 if card in hand, 0 otherwise)
   - Cards played this round as 52-dim binary vector
-  - Current trick as 52-dim binary vector (with positional encoding for play order)
-  - Hearts broken: 1-dim
-  - Points taken per player: 4-dim
-  - Trick number: 1-dim (normalized)
-  - Cumulative scores: 4-dim (normalized)
-  - Total: ~165 features (students are told this is a starting point to improve)
+  - Current trick as 52-dim binary vector (with positional encoding: multiply by 0.25/0.5/0.75/1.0 based on play order)
+  - Hearts broken: 1-dim (0 or 1)
+  - Points taken per player: 4-dim (raw ints)
+  - Trick number: 1-dim (normalized to 0.0–1.0)
+  - Cumulative scores: 4-dim (divided by 100 for normalization)
+  - **Every feature group should have a block comment explaining what it captures and why**
+  - **End with a block comment listing what this extractor does NOT capture** — this is the launching pad for student work
 
-- **Student task stub** `CustomFeatureExtractor`:
-  - Skeleton with TODOs and hints:
-    - "Consider: which suits have you voided?"
-    - "Consider: which high cards (Q♠, K♠, A♠) are still unplayed?"
-    - "Consider: how many hearts are still out?"
-    - "Consider: what can you infer about other players' hands from their plays?"
+- **`StudentFeatureExtractor`** (the student's working copy):
+  - Starts as an exact copy of `BasicFeatureExtractor`
+  - Students modify this class to add/change features
+  - Includes clearly marked `# === YOUR FEATURES BELOW ===` section at the end
+  - Pre-populated with commented-out example stubs for the first exercise (suit void tracking) to show the pattern:
+    ```python
+    # === YOUR FEATURES BELOW ===
+    # Example: suit void tracking (uncomment and complete)
+    # for suit in Suit:
+    #     cards_of_suit = [c for c in view.hand if c.suit == suit]
+    #     features.append(1.0 if len(cards_of_suit) == 0 else 0.0)
+    #     names.append(f"void_{suit.name}")
+    ```
 
-**Tests:** Feature dimensions are consistent, no NaN/inf values, feature values in expected ranges.
+**Tests:** Both extractors produce consistent dimensions, `feature_names()` length matches `extract()` output length, no NaN/inf values, feature values in expected ranges. Test with multiple different `PlayerView` snapshots (early trick, late trick, hearts broken, etc.).
 
 ---
 
-### Step 11: Training Pipeline Scaffold
+### Step 11: Training Pipeline
 
 Create `hearts/ml/train.py`:
 
-- **Data loading**: reads generated game data, applies feature extractor, produces X (features) and y (labels) matrices
-- **Label encoding**:
-  - For `play_card`: card index 0–51 (classification over legal moves)
-  - For `pass_cards`: multi-label or treated as 3 sequential decisions
-- **Model scaffold** using scikit-learn (low barrier to entry):
-  - Provided working example with `RandomForestClassifier`
-  - Clear interface: `train(X, y) -> model`, `predict(model, x) -> card`
-  - Students can swap in: gradient boosting, SVM, simple neural net via `MLPClassifier`
-- **Train/validation split** with evaluation metrics:
-  - Classification accuracy on held-out data
-  - **But more importantly**: tournament performance vs RuleBot
+This is a **fixed pipeline that students do not modify**. It should be readable (students are encouraged to read it to understand what's happening) but not a task for them.
 
-- **Training script** (`scripts/train_model.py`):
-  - Loads data, extracts features, trains model, saves to `models/` directory
-  - CLI args via `argparse`: `--data-dir` (default `data/output/`), `--output` (default `models/model.pkl`), `--features` (extractor class name), `--n-estimators`, `--test-size`
+- **`load_data(data_dir) -> list[dict]`**: reads `play_decisions.jsonl`, returns list of records
+- **`build_dataset(records, extractor: FeatureExtractor) -> tuple[np.ndarray, np.ndarray]`**:
+  - Reconstructs `PlayerView` from each record's serialized JSON
+  - Calls `extractor.extract(view)` to get feature vector
+  - Label is the card index (0–51) from the record
+  - Returns X (n_samples × n_features) and y (n_samples,)
+- **`train_model(X, y, seed) -> tuple[RandomForestClassifier, dict]`**:
+  - Fixed model: `RandomForestClassifier(n_estimators=100, random_state=seed)`
+  - 80/20 train/test split
+  - Trains on training set
+  - Returns the trained model and a metrics dict containing:
+    - `train_accuracy`: float
+    - `test_accuracy`: float
+    - `feature_importances`: list of (feature_name, importance) tuples, sorted descending
+  - No model selection, no hyperparameter flags — the model is a constant
+- **`save_model(model, extractor, path)`**: pickles model + extractor class name together so evaluation can reload them as a pair
 
-**Tests:** Pipeline runs end-to-end on small data sample, model can be saved/loaded, predictions are valid card indices.
+- **Script** (`scripts/train_model.py`):
+  - CLI args: `--data-dir` (default `data/output/`), `--output` (default `models/model.pkl`), `--features` (extractor class name, default `StudentFeatureExtractor`), `--seed`
+  - Prints to stdout:
+    - Number of training samples
+    - Feature vector dimensionality
+    - Train/test accuracy
+    - Top 10 features by importance
+  - Saves model to disk
+
+**Tests:** Pipeline runs end-to-end on a small generated dataset (~100 games), model can be saved and reloaded, predictions are valid card indices in range 0–51, metrics dict contains all expected keys.
 
 ---
 
@@ -320,40 +342,143 @@ Create `hearts/bots/ml_bot.py`:
 
 - `MLBot(Bot)`:
   - Constructor takes a trained model, feature extractor, and an optional `pass_strategy: Bot` (defaults to a `RuleBot` instance via composition — **not** inheritance)
-  - `play_card`: extracts features from PlayerView → model predicts → masks to legal moves → selects card
-  - `pass_cards`: delegates to `self.pass_strategy.pass_cards()` (composition pattern). Students can replace this with a trained pass model later.
-  - Handles edge cases: model predicts illegal move → fall back to highest-probability legal move
+  - `play_card`: extracts features from PlayerView → calls `model.predict_proba()` → masks to legal moves only (zero out probabilities for illegal cards) → selects highest-probability legal card. If the model doesn't support `predict_proba`, falls back to `predict()` and checks legality.
+  - `pass_cards`: delegates to `self.pass_strategy.pass_cards()` (composition pattern)
+  - Edge case handling: if all legal moves have zero probability after masking (shouldn't happen but defensive), fall back to random legal card
 
-- Factory function: `load_ml_bot(model_path, feature_extractor) -> Bot`
+- Factory function: `load_ml_bot(model_path) -> Bot` — loads the pickled model + extractor class name, instantiates the extractor, returns an MLBot
 
-**Tests:** MLBot always plays legal cards, gracefully handles all game situations, can complete full games.
-
----
-
-### Step 13: Evaluation & Iteration Tools
-
-Create `hearts/ml/evaluate.py` and update tournament:
-
-- **Head-to-head evaluation**: run ML bot vs RuleBots in tournament, report win rate and average score margin
-- **Learning curve**: train on increasing data sizes, plot tournament performance
-- **Feature importance**: for tree-based models, report which features matter most
-- **Comparison dashboard** (optional simple script): table of different student models' tournament results
-
-**Tests:** Head-to-head evaluation produces correct win rates, learning curve function runs on small data, feature importance extraction works for tree-based models.
+**Tests:** MLBot always plays legal cards across many random games (fuzz test), gracefully handles edge cases, can complete full games without errors. Test with a deliberately bad model (random weights) to verify fallback behavior.
 
 ---
 
-### Step 14: Student-Facing Documentation for Tier 2
+### Step 13: Evaluation Script
 
-- `docs/ml_guide.md`:
-  - Explains the feature engineering task and why feature choice matters
-  - Walks through the provided `BasicFeatureExtractor`
-  - Lists the suggested improvements with increasing difficulty
-  - Explains training pipeline and how to evaluate
-  - Rubric: beat RandomBot (baseline) → beat RuleBot (good) → beat other students (excellent)
+Create `hearts/ml/evaluate.py` and **script** `scripts/evaluate_model.py`:
 
-- `docs/data_format.md`: schema of generated game data
-- `docs/api_reference.md`: full reference of PlayerView fields and what information is available
+This is the second half of the student workflow. After training, students run this to see how their bot actually plays.
+
+- **`evaluate_model.py`** script:
+  - CLI args: `--model` (default `models/model.pkl`), `--games` (default 200), `--seed`
+  - Loads the saved model via `load_ml_bot()`
+  - Runs a tournament: 1× MLBot vs 3× RuleBot, with seat rotation
+  - Prints a unified results report to stdout:
+
+    ```
+    === Training Metrics ===
+    Feature vector size:  169 features
+    Train accuracy:       34.2%
+    Test accuracy:        31.8%
+
+    === Feature Importance (top 10) ===
+    1. hand_QS              0.0823
+    2. trick_num            0.0614
+    3. hearts_broken        0.0487
+    ...
+
+    === Tournament Results (200 games) ===
+    Player          Win Rate    Avg Score   Avg Rank
+    MLBot           28.5%       24.3        2.1
+    RuleBot-1       24.0%       25.1        2.4
+    RuleBot-2       23.5%       25.8        2.5
+    RuleBot-3       24.0%       25.4        2.4
+
+    Baseline (RandomBot):  ~5% win rate, ~32 avg score
+    Target (beat RuleBot): >25% win rate consistently
+    ```
+
+  - The report is designed so students can immediately see:
+    - Whether their features are helping (compare to baseline numbers)
+    - Which features the model is actually using (importance)
+    - Whether they're overfitting (train vs test accuracy gap)
+
+- **Evaluation functions** in `hearts/ml/evaluate.py` (used by the script but also importable):
+  - `run_evaluation(model_path, n_games, seed) -> EvaluationResult`
+  - `print_report(result: EvaluationResult)` — formats the stdout report
+  - `EvaluationResult` dataclass: holds training metrics, feature importance, and tournament stats
+
+**Tests:** Evaluation runs end-to-end with a trained model, report contains all expected sections, win rates sum to ~100%, tournament uses seat rotation.
+
+---
+
+### Step 14: Student-Facing Documentation
+
+This is the centerpiece of Tier 2. The `ml_guide.md` functions as a **lab handout** — it teaches concepts, walks through the codebase, and structures the assignment.
+
+#### `docs/ml_guide.md` — structure:
+
+**Part 1: What You're Building** (~1 page)
+- Your goal: build a Hearts bot that beats RuleBot by teaching a model to pick good cards
+- The model (RandomForest) is fixed — your job is to decide **what information to give it**
+- Analogy: the model sees a list of numbers, not cards. Your feature extractor is the translator. A good translator tells the model what matters; a bad one buries the signal in noise.
+
+**Part 2: ML Concepts You Need** (~2 pages)
+- **Classification**: the model sees a game state and picks one of 52 cards. It's trained on thousands of examples of what RuleBot chose in similar situations.
+- **Features**: the numeric representation of a game state. Same game state, different features = different model behavior.
+- **Training and testing**: we split the data so we can check if the model memorized or actually learned. Explain train/test split in plain terms.
+- **Feature importance**: the model can tell us which numbers it relied on most. This is your debugging tool.
+- Keep it concrete — every concept illustrated with a Hearts example, not abstract math.
+
+**Part 3: The Workflow** (~1 page)
+- Two-step process, documented as copy-paste terminal commands:
+  1. `python scripts/train_model.py` — trains the model using your features, saves to `models/model.pkl`
+  2. `python scripts/evaluate_model.py` — loads the model, plays 200 games vs RuleBot, prints results
+- Edit `hearts/ml/features.py` → run step 1 → run step 2 → read the report → repeat
+- Explain what each section of the output report means
+
+**Part 4: Understanding BasicFeatureExtractor** (~2 pages)
+- Full code walkthrough, feature group by feature group
+- For each group: what it encodes, what a value of 0 vs 1 means, why it might help
+- End with an explicit list: "Here's what the basic extractor **cannot** see" — this seeds Part 5:
+  - It doesn't know which suits you're void in
+  - It doesn't know if dangerous cards (Q♠, K♠, A♠) have been played yet
+  - It doesn't know how many hearts are still out there
+  - It doesn't know where you are in the trick (leading? last to play?)
+  - It doesn't know what other players are likely to be holding
+
+**Part 5: Feature Engineering Exercises** (~3 pages)
+- Structured as a progression. Each exercise has:
+  - **Motivation**: a scenario that shows why this information matters (e.g., "You hold the K♠. Should you be worried? That depends entirely on whether the Q♠ has already been played.")
+  - **What to encode**: description of the feature(s) to add, with encoding hints (binary flag? count? normalized value?)
+  - **Implementation hint**: which `PlayerView` fields to use
+  - **Sanity check**: after training, what feature importance should you expect? (e.g., "If Q♠-still-out shows up in the top 10, you've done it right.")
+
+- **Exercise progression:**
+  1. **Suit void tracking** (4 features) — am I void in each suit? Binary flags. Uses `view.hand`. *Motivation: if you're void in diamonds, you can dump hearts or Q♠ when diamonds are led.*
+  2. **Dangerous cards remaining** (3 features) — have Q♠, K♠, A♠ been played yet? Binary flags. Uses `view.cards_played_this_round`. *Motivation: the entire spade game changes once Q♠ is gone.*
+  3. **Hearts remaining** (1 feature) — how many of the 13 hearts haven't appeared yet? Normalized count. Uses `view.cards_played_this_round`. *Motivation: leading hearts late in a round when 10 hearts are still out is very different from when only 2 remain.*
+  4. **Trick position** (1–2 features) — where am I in the current trick? Am I leading, or playing last? Uses `len(view.trick_so_far)`. *Motivation: if you play last, you know exactly what you'll take. If you lead, you're guessing.*
+  5. **Opponent void inference** (4–8 features) — which players appear to be void in which suits, based on them not following suit earlier? Uses `view.cards_played_this_round`. *Motivation: if the player to your left is void in clubs, leading clubs lets them dump points on you. This is the hardest exercise — it requires iterating over past tricks and reasoning about what other players' plays reveal.*
+
+**Part 6: Interpreting Your Results** (~1 page)
+- How to read the evaluation report
+- What "good" looks like: concrete targets
+  - Baseline (RandomBot): ~5% win rate, ~32 avg score
+  - Basic features only: ~15–20% win rate
+  - Good features: >25% win rate (consistently beating RuleBot)
+  - Great features: >30% win rate
+- Common failure modes:
+  - Features that don't change (constant value = zero information)
+  - Features that duplicate existing ones (redundant = wasted capacity)
+  - Train accuracy much higher than test accuracy (overfitting — too many features, not enough signal)
+  - Bug check: if win rate drops below RandomBot, you have a bug in your feature code
+
+**Part 7: Extensions** (optional, for advanced students, ~1 page)
+- Train a model for `pass_cards` using `pass_decisions.jsonl` and write a `PassFeatureExtractor`
+- Experiment with different models: swap `RandomForestClassifier` for `GradientBoostingClassifier` or `MLPClassifier` in a copy of `train.py`
+- Generate training data with mixed bot populations (e.g., 2× RuleBot + 2× RandomBot) and compare model quality
+- Feature engineering for "shooting the moon" detection
+
+#### `docs/data_format.md`:
+- Schema of `play_decisions.jsonl` — every field, its type, and an example record
+- Schema of `pass_decisions.jsonl` (brief, since it's optional)
+- How records map to `PlayerView` fields
+
+#### `docs/api_reference.md`:
+- Full reference for `PlayerView`: every field, its type, what it contains, when it's populated
+- Full reference for `PassView`
+- Card index mapping (0–51 → which card)
+- `FeatureExtractor` interface: methods to implement, contract (dimensions must be consistent, names must match)
 
 ---
 
@@ -363,10 +488,9 @@ Create `hearts/ml/evaluate.py` and update tournament:
 hearts-project/
 ├── pyproject.toml         # Step 0
 ├── .gitignore             # Step 0
-├── README.md              # Step 8
 ├── hearts/
 │   ├── __init__.py
-│   ├── __main__.py        # CLI entry point: `python -m hearts`
+│   ├── __main__.py        # Step 8: CLI entry point
 │   ├── types.py           # Step 1
 │   ├── state.py           # Step 2
 │   ├── rules.py           # Step 3
@@ -385,8 +509,8 @@ hearts-project/
 │   │   └── schema.py      # Step 9
 │   └── ml/
 │       ├── __init__.py
-│       ├── features.py    # Step 10
-│       ├── train.py       # Step 11
+│       ├── features.py    # Step 10 ← STUDENTS EDIT THIS FILE
+│       ├── train.py       # Step 11 (fixed, students read but don't modify)
 │       └── evaluate.py    # Step 13
 ├── tests/
 │   ├── test_types.py      # Step 1
@@ -404,14 +528,15 @@ hearts-project/
 ├── scripts/
 │   ├── generate_data.py   # Step 9
 │   ├── train_model.py     # Step 11
+│   ├── evaluate_model.py  # Step 13
 │   └── run_tournament.py  # Step 7
 ├── data/
 │   └── output/            # Step 9: generated game data (gitignored)
 ├── models/                # Trained model files (gitignored)
 ├── docs/
-│   ├── ml_guide.md        # Step 14
-│   ├── data_format.md     # Step 14
-│   └── api_reference.md   # Step 14
+│   ├── ml_guide.md        # Step 14: student lab handout
+│   ├── data_format.md     # Step 14: data schema reference
+│   └── api_reference.md   # Step 14: PlayerView / PassView / FeatureExtractor reference
 ├── examples/
 │   └── my_first_bot.py    # Step 8
 └── README.md              # Step 8
@@ -423,10 +548,14 @@ hearts-project/
 
 **Why `PlayerView` is so detailed:** This is the bridge between Tier 1 and Tier 2. Everything a student might want as an ML feature must be accessible through `PlayerView`. By making this rich from the start, students don't need to modify the engine — they just need to decide which information to encode.
 
+**Why students only edit `features.py`:** This is their first ML course. Giving them one file to modify with a clear contract (implement `extract()` and `feature_names()`) keeps the scope manageable. The fixed model and pipeline let them focus entirely on the interesting question: what information matters?
+
+**Why the model is fixed (RandomForest):** A good feature vector with a random forest will beat a bad feature vector with a neural net. By fixing the model, students learn that *representation is the bottleneck* — the most important lesson in applied ML. Model choice is available as an optional extension for advanced students.
+
 **Why RuleBot matters:** It sets the bar. Random is too easy to beat; a decent heuristic bot forces students to actually learn something useful from the data. It also generates better training data than RandomBot would.
 
-**Why scikit-learn first (not PyTorch):** Lower barrier. Students can focus on feature engineering, which is where the real learning happens at this level. A good feature vector with a random forest will beat a bad feature vector with a neural net. A future extension could introduce PyTorch for students who want to go deeper.
+**Why the evaluation report is all-in-one:** Students need immediate, interpretable feedback. Printing accuracy, feature importance, and tournament results in a single report means they can see the full picture after every iteration without juggling multiple scripts or outputs.
 
 **Why classification over legal moves, not regression:** Predicting "which card to play" as a classification task with masking to legal moves is cleaner than trying to predict card values. The masking step is a great teaching moment about constrained prediction.
 
-**Why composition for MLBot pass strategy:** `MLBot` holds a `pass_strategy: Bot` instance (defaulting to `RuleBot`) rather than inheriting from `RuleBot` or duplicating logic. This keeps the architecture clean and lets students swap in a trained pass model without modifying `MLBot` itself.
+**Why composition for MLBot pass strategy:** `MLBot` holds a `pass_strategy: Bot` instance (defaulting to `RuleBot`) rather than inheriting from `RuleBot` or duplicating logic. This keeps the architecture clean and lets advanced students swap in a trained pass model without modifying `MLBot` itself.
