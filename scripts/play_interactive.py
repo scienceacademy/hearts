@@ -26,6 +26,10 @@ from hearts.bot import Bot  # noqa: E402
 from hearts.bots.human_bot import HumanBot  # noqa: E402
 from hearts.game import Game  # noqa: E402
 
+RESET = '\033[0m'
+GREY = '\033[90m'
+CYAN = '\033[96m'
+BOLD = '\033[1m'
 
 def discover_bots() -> dict[str, type[Bot]]:
     """Find all non-human Bot subclasses in hearts.bots."""
@@ -90,6 +94,7 @@ def main() -> None:
 
     registry = discover_bots()
 
+    os.system("cls" if os.name == "nt" else "clear")
     if args.list_bots:
         print("Available bots:")
         for cls in registry.values():
@@ -102,10 +107,10 @@ def main() -> None:
         parser.error("exactly 3 bot names are required")
 
     rng = random.Random(args.seed)
-    human = HumanBot()
+    seat = args.seat
+    human = HumanBot(seat)
 
     opponents = [make_bot(n, registry, rng) for n in bot_names]
-    seat = args.seat
     bots: list[Bot] = []
     names: list[str] = []
     opp_idx = 0
@@ -118,10 +123,8 @@ def main() -> None:
             names.append(bot_names[opp_idx])
             opp_idx += 1
 
-    print("=== Hearts ===")
-    print(f"Seats: {', '.join(f'P{i}={n}' for i, n in enumerate(names))}")
-    print(f"You are P{seat}.")
-    print()
+    print(f"{BOLD}=== Hearts ==={RESET}")
+    print(f"Seats: {', '.join(f'{n} ({CYAN if i == seat else GREY}P{i}{RESET})' for i, n in enumerate(names))}\n")
 
     result = Game(bots, rng=rng).play()
 
