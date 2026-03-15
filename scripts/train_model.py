@@ -9,6 +9,7 @@ Usage:
 import argparse
 import os
 import sys
+import time
 from pathlib import Path
 
 sys.path.insert(
@@ -65,6 +66,7 @@ def main() -> None:
 
     extractor = EXTRACTORS[args.features]()
     extractor_name = args.features
+    pipeline_start = time.monotonic()
 
     data_file = Path(args.data_dir) / "play_decisions.jsonl"
     if not data_file.exists():
@@ -75,26 +77,41 @@ def main() -> None:
         sys.exit(1)
 
     print(f"Loading data from {args.data_dir}...")
+    t0 = time.monotonic()
     records = load_data(args.data_dir)
-    print(f"  {len(records)} play decisions loaded")
+    t_load = time.monotonic() - t0
+    print(f"  {len(records)} play decisions loaded ({t_load:.1f}s)")
     print()
 
     def build_progress(current, total):
+        elapsed = time.monotonic() - t_build
+        rate = current / elapsed if elapsed > 0 else 0
+        remaining = (total - current) / rate if rate > 0 else 0
         print(
-            f"\r  Extracting features: {current}/{total}",
+            f"\r  Extracting features: {current}/{total} "
+            f"[{elapsed:.0f}s elapsed, ~{remaining:.0f}s remaining]",
             end="", flush=True,
         )
+        if current == total:
+            print()
 
     print(f"Building features with {extractor_name}...")
+    t_build = time.monotonic()
     X, y = build_dataset(records, extractor, progress=build_progress)
-    print()
+    t_features = time.monotonic() - t_build
     print(f"  Feature vector size: {X.shape[1]} features")
     print(f"  Samples: {X.shape[0]}")
     print()
 
     print("Training RandomForestClassifier...")
+    t0 = time.monotonic()
     model, metrics = train_model(
         X, y, extractor.feature_names(), seed=args.seed
+    )
+    t_train = time.monotonic() - t0
+    print(
+        f"  Done ({t_train:.1f}s, "
+        f"{metrics['n_jobs']} parallel workers)"
     )
 
     print()
@@ -114,7 +131,13 @@ def main() -> None:
     print()
 
     save_model(model, extractor_name, metrics, args.output)
+    total_time = time.monotonic() - pipeline_start
     print(f"Model saved to {args.output}")
+    print(
+        f"Total time: {total_time:.0f}s "
+        f"(load {t_load:.0f}s + features {t_features:.0f}s "
+        f"+ train {t_train:.0f}s)"
+    )
 
 
 if __name__ == "__main__":

@@ -76,7 +76,11 @@ class TestBasicFeatureExtractor:
         view = _make_view()
         vec = ext.extract(view)
         names = ext.feature_names()
-        assert len(vec) == len(names)
+        assert len(vec) == len(names), (
+            f"extract() returned {len(vec)} features but "
+            f"feature_names() returned {len(names)} names. "
+            f"Each feature needs exactly one name."
+        )
 
     def test_expected_dimension(self):
         ext = BasicFeatureExtractor()
@@ -214,7 +218,12 @@ class TestStudentFeatureExtractor:
         view = _make_view()
         vec = ext.extract(view)
         names = ext.feature_names()
-        assert len(vec) == len(names)
+        assert len(vec) == len(names), (
+            f"extract() returned {len(vec)} features but "
+            f"feature_names() returned {len(names)} names. "
+            f"Did you add a feature value without adding a "
+            f"corresponding name (or vice versa)?"
+        )
 
     def test_extends_basic(self):
         basic = BasicFeatureExtractor()
@@ -317,3 +326,27 @@ class TestExtractorsWithVariousViews:
         )
         vec = extractor.extract(view)
         assert len(vec) == len(extractor.feature_names())
+
+
+class TestFastPathEquivalence:
+    """extract_from_record must produce identical output to extract."""
+
+    def test_basic_fast_path_matches_normal(self):
+        """Run real games and verify fast path matches normal path."""
+        from hearts.bots.rule_bot import RuleBot
+        from hearts.data.generator import generate_game_data
+        from hearts.data.schema import deserialize_player_view
+
+        ext = BasicFeatureExtractor()
+        bots = [RuleBot() for _ in range(4)]
+        _, play_recs, _ = generate_game_data(bots, seed=99)
+
+        # Check a sample of records across the game
+        for rec in play_recs[::10]:
+            view = deserialize_player_view(rec)
+            normal = ext.extract(view)
+            fast = ext.extract_from_record(rec)
+            np.testing.assert_array_almost_equal(
+                normal, fast,
+                err_msg="Fast path output differs from normal path",
+            )

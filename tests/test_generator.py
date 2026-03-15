@@ -130,6 +130,30 @@ class TestGenerateGameData:
                 f"Round scores sum to {total}: {round_result.scores}"
             )
 
+    def test_serialized_round_scores_sum_correctly(self):
+        """round_score in play records should sum to 26 or 78 per round."""
+        bots = [RuleBot() for _ in range(4)]
+        _, play_recs, _ = generate_game_data(bots, seed=42)
+        # Group records by round_number, then get one round_score per
+        # player per round (each player has the same round_score across
+        # all their records within a round).
+        from collections import defaultdict
+
+        round_player_scores: dict[int, dict[int, int]] = defaultdict(dict)
+        for rec in play_recs:
+            rn = rec["round_number"]
+            pi = rec["player_index"]
+            round_player_scores[rn][pi] = rec["round_score"]
+        for rn, player_scores in round_player_scores.items():
+            assert len(player_scores) == 4, (
+                f"Round {rn} has {len(player_scores)} players, expected 4"
+            )
+            total = sum(player_scores.values())
+            assert total in (26, 78), (
+                f"Round {rn} serialized round_scores sum to {total}: "
+                f"{player_scores}"
+            )
+
     def test_game_rank_values(self):
         """game_rank should be 1-4 with correct ordering."""
         bots = [RuleBot() for _ in range(4)]

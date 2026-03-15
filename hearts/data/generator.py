@@ -160,6 +160,7 @@ def generate_dataset(
     bot_factory: Callable[[], list[Bot]],
     output_dir: str | Path,
     seed: Optional[int] = None,
+    progress: Optional[Callable[[int, int, float], None]] = None,
 ) -> tuple[int, int]:
     """Generate a dataset of game decisions and write to JSONL files.
 
@@ -168,10 +169,13 @@ def generate_dataset(
         bot_factory: callable returning a list of 4 bots
         output_dir: directory to write output files
         seed: optional seed for reproducibility
+        progress: optional callback(games_done, total_games, elapsed_secs)
 
     Returns:
         Tuple of (total_play_records, total_pass_records).
     """
+    import time
+
     output_path = Path(output_dir)
     output_path.mkdir(parents=True, exist_ok=True)
 
@@ -180,6 +184,7 @@ def generate_dataset(
 
     total_play = 0
     total_pass = 0
+    start_time = time.monotonic()
 
     with (
         open(play_file, "w") as pf,
@@ -201,10 +206,33 @@ def generate_dataset(
             total_play += len(play_records)
             total_pass += len(pass_records)
 
-            if (game_num + 1) % 1000 == 0 or game_num + 1 == n_games:
-                print(
-                    f"  Games: {game_num + 1}/{n_games} "
-                    f"({total_play} play, {total_pass} pass records)"
-                )
+            done = game_num + 1
+            if done % 500 == 0 or done == n_games:
+                elapsed = time.monotonic() - start_time
+                if progress is not None:
+                    progress(done, n_games, elapsed)
+                else:
+                    _default_progress(done, n_games, elapsed,
+                                      total_play, total_pass)
 
     return total_play, total_pass
+
+
+def _default_progress(
+    done: int,
+    total: int,
+    elapsed: float,
+    play_count: int,
+    pass_count: int,
+) -> None:
+    """Print a progress line with ETA."""
+    rate = done / elapsed if elapsed > 0 else 0
+    remaining = (total - done) / rate if rate > 0 else 0
+    print(
+        f"\r  Games: {done}/{total} "
+        f"({play_count} play, {pass_count} pass) "
+        f"[{elapsed:.0f}s elapsed, ~{remaining:.0f}s remaining]",
+        end="", flush=True,
+    )
+    if done == total:
+        print()

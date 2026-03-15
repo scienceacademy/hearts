@@ -20,6 +20,7 @@ Create project scaffolding:
 - **`pyproject.toml`**: project metadata, dependencies, and tool configuration
   - Core dependencies: none (Tier 1 is pure Python stdlib)
   - ML dependencies (optional install group `[ml]`): `numpy`, `scikit-learn`, `matplotlib`
+  - Neural network dependencies (optional install group `[nn]`): `torch` (CPU-only)
   - Dev dependencies (optional install group `[dev]`): `pytest`, `ruff`
 - **`.gitignore`**: Python defaults, `.venv/`, `data/output/`, `models/`, `__pycache__/`
 - **`hearts/__init__.py`**: package init
@@ -233,112 +234,34 @@ Create `hearts/tournament.py`:
 
 ## Tier 2: Classical ML Framework
 
-**Student context:** This is students' first ML course. They understand Python but have not used scikit-learn, numpy, or ML concepts before. The documentation is a teaching tool, not just a reference. Students will **only** modify `hearts/ml/features.py` — the model (RandomForestClassifier) and training pipeline are fixed. Their sole task is feature engineering: deciding what information from `PlayerView` to encode as numbers, and how.
-
 ### Step 9: Game Data Generation & Storage
 
-Create `hearts/data/schema.py`, `hearts/data/generator.py`, and `scripts/generate_data.py`.
+Create `hearts/data/generator.py` and `hearts/data/schema.py`:
 
-#### Card Index Mapping
+- **Data schema** — for each decision point, store:
+  - **Common features** (shared context):
+    - Round number, pass direction
+    - Current scores (all 4 players, both this round and cumulative)
+    - Cards already played this round (could be encoded as 52-bit vector)
+    - Hearts broken flag
+  - **For `play_card` decisions:**
+    - Hand (52-bit binary vector: 1 if card in hand)
+    - Current trick cards and positions
+    - Legal plays (52-bit mask)
+    - Trick number (1–13)
+    - Player's seat position relative to lead
+    - **Label/target**: card that was played
+    - **Outcome** (for reward signals): points taken this trick, final round score, game result
+  - **For `pass_cards` decisions:**
+    - Hand before passing (52-bit vector)
+    - **Label/target**: the 3 cards passed
+    - **Outcome**: round score, game result
 
-Cards are represented as integers 0–51 using the mapping: `index = suit_ordinal * 13 + (rank - 2)`, where suit ordinals are CLUBS=0, DIAMONDS=1, SPADES=2, HEARTS=3 and ranks are 2–14 (J=11, Q=12, K=13, A=14).
+- **Generator**: runs N games with RuleBot (or mixed bots), serializes every decision point to JSON Lines format
+- **Output location**: `data/output/` directory (gitignored). Default filenames: `play_decisions.jsonl` and `pass_decisions.jsonl`
+- Generate a provided dataset: ~10,000 games → ~520,000 play decisions + ~40,000 pass decisions
 
-Examples: 0 = 2♣, 12 = A♣, 13 = 2♦, 37 = Q♠, 51 = A♥.
-
-`schema.py` provides `card_to_index(card: Card) -> int` and `index_to_card(index: int) -> Card`.
-
-#### Play Decision Record (`play_decisions.jsonl`)
-
-Each line is a JSON object mirroring `PlayerView` fields, plus a label and outcome annotations. Example:
-
-```json
-{
-  "player_index": 2,
-  "trick_number": 4,
-  "hand": [0, 3, 7, 15, 22, 28, 31, 40, 44, 51],
-  "legal_plays": [0, 3, 7],
-  "trick_so_far": [[0, 19], [1, 23]],
-  "lead_suit": "DIAMONDS",
-  "hearts_broken": true,
-  "is_first_trick": false,
-  "cards_played_this_round": [
-    [[0, 0], [1, 12], [2, 25], [3, 38]],
-    [[3, 39], [0, 11], [1, 50], [2, 24]],
-    [[1, 19], [3, 48], [0, 36], [2, 10]]
-  ],
-  "tricks_won_by_player": [1, 1, 1, 0],
-  "points_taken_by_player": [0, 1, 0, 0],
-  "pass_direction": "LEFT",
-  "cards_received_in_pass": [3, 15, 44],
-  "cumulative_scores": [22, 45, 18, 31],
-  "round_number": 4,
-
-  "card_played": 7,
-
-  "points_this_trick": 0,
-  "round_score": 3,
-  "game_rank": 1
-}
-```
-
-Field notes:
-- `trick_so_far`: list of `[player_index, card_index]` pairs in play order — the in-progress trick
-- `cards_played_this_round`: list of completed tricks, each a list of 4 `[player_index, card_index]` pairs in play order. Trick number is implicit (array index + 1). Does **not** include the current in-progress trick (that's `trick_so_far`)
-- `lead_suit`: string name of suit enum, or `null` if this player is leading
-- `pass_direction`: string — `"LEFT"`, `"RIGHT"`, `"ACROSS"`, or `"NONE"`
-- `cards_received_in_pass`: list of 3 card indices, or `[]` during No Pass rounds
-- **Label**: `card_played` — the card index (0–51) that was played
-- **Outcome annotations** (added after game completes): `points_this_trick`, `round_score`, `game_rank` (1–4, 1 = best)
-
-#### Pass Decision Record (`pass_decisions.jsonl`)
-
-Each line mirrors `PassView` fields. Example:
-
-```json
-{
-  "player_index": 2,
-  "hand": [0, 3, 7, 12, 15, 22, 28, 31, 40, 44, 47, 49, 51],
-  "pass_direction": "LEFT",
-  "cumulative_scores": [22, 45, 18, 31],
-  "round_number": 4,
-
-  "cards_passed": [47, 49, 51],
-
-  "round_score": 3,
-  "game_rank": 1
-}
-```
-
-#### `hearts/data/schema.py`
-
-- `card_to_index(card: Card) -> int` and `index_to_card(index: int) -> Card`
-- `serialize_player_view(view: PlayerView) -> dict` — converts to JSON-safe dict using index mapping. `cards_played_this_round` is restructured from flat `(trick_num, player_index, Card)` tuples into the nested-by-trick format shown above.
-- `deserialize_player_view(data: dict) -> PlayerView` — reconstructs a `PlayerView`, flattening the nested trick structure back to `(trick_num, player_index, Card)` tuples.
-- `serialize_pass_view(view: PassView) -> dict`
-- `deserialize_pass_view(data: dict) -> PassView`
-
-#### `hearts/data/generator.py`
-
-- `RecordingBot(Bot)` — wraps any `Bot` instance. Intercepts `pass_cards` and `play_card` calls: records the serialized view and the chosen action, then delegates to the inner bot. Stores records in memory as a list per game.
-- `generate_game_data(bots: list[Bot], seed) -> tuple[GameResult, list[dict], list[dict]]` — wraps the 4 bots in `RecordingBot`s, runs one `Game`, then annotates each recorded decision with outcome data (`points_this_trick`, `round_score`, `game_rank`) from the `GameResult` and `RoundResult` objects. Returns the game result plus the annotated play and pass records.
-- `generate_dataset(n_games, bot_factory, output_dir, seed)` — runs N games, writes `play_decisions.jsonl` and `pass_decisions.jsonl` line by line. Prints progress to stdout.
-
-#### `scripts/generate_data.py`
-
-CLI entry point:
-- `--games` (default 10000)
-- `--output-dir` (default `data/output/`)
-- `--seed` (default: none, for reproducibility)
-- Runs 4× RuleBot by default
-- Prints summary on completion: number of games, total play decisions, total pass decisions, output file paths
-
-**Tests (`tests/test_schema.py` and `tests/test_generator.py`):**
-- **Schema round-trip**: serialize a `PlayerView` → JSON string → deserialize → compare all fields to original
-- **Schema round-trip for `PassView`**
-- **Card index mapping**: `index_to_card(card_to_index(card)) == card` for all 52 cards
-- **Generator record count**: run a small game (e.g., 2 games with seeded RNG), verify number of play records = total cards played (52 per round × num_rounds per game × num_games), number of pass records = expected count (accounting for No Pass rounds)
-- **Outcome annotation correctness**: verify `round_score` sums to 26 (or 78 on shoot-the-moon) per round across all 4 players, `game_rank` values are 1–4 with correct ordering
-- **JSONL format**: records can be loaded with `json.loads()` line by line
+**Tests:** Schema validation, generated data can be loaded and shapes are correct.
 
 ---
 
@@ -482,7 +405,7 @@ This is the second half of the student workflow. After training, students run th
 
 ---
 
-### Step 14: Student-Facing Documentation
+### Step 14: Student-Facing Documentation for Tier 2
 
 This is the centerpiece of Tier 2. The `ml_guide.md` functions as a **lab handout** — it teaches concepts, walks through the codebase, and structures the assignment.
 
@@ -563,6 +486,152 @@ This is the centerpiece of Tier 2. The `ml_guide.md` functions as a **lab handou
 
 ---
 
+## Tier 3: Neural Networks & Learned Representations
+
+**Prerequisite:** Students have completed Tier 2 — they have a working `StudentFeatureExtractor`, understand the train/evaluate workflow, and have tournament results for their hand-crafted features with RandomForest.
+
+**Goal:** Explore whether a neural network can match or beat hand-crafted features by learning its own representations. Students will progress from a drop-in sklearn MLP (minimal new code) to a PyTorch model where they control the architecture and input representation.
+
+**New dependency:** `torch` (CPU only — added to `pyproject.toml` as optional install group `[nn]`). No GPU required. The problem is small enough (~20k parameters, ~500k training samples) to train in under a minute on any modern laptop CPU.
+
+### Step 15: sklearn MLP Baseline
+
+Create `scripts/train_mlp.py` (a copy of `train_model.py` with the model swapped):
+
+This step introduces neural networks with **zero new dependencies or APIs**. Students swap one line — `RandomForestClassifier` → `MLPClassifier` — and compare results.
+
+- **Script** (`scripts/train_mlp.py`):
+  - Identical to `train_model.py` except the model is `MLPClassifier(hidden_layer_sizes=(128, 64), max_iter=200, random_state=seed)`
+  - Uses the same `FeatureExtractor`, same data, same `save_model` format
+  - The saved model works with the existing `evaluate_model.py` and `MLBot` unchanged (sklearn's `MLPClassifier` supports `predict_proba`)
+  - CLI args: same as `train_model.py`
+
+- **Student task**: run `train_mlp.py` with their `StudentFeatureExtractor`, then `evaluate_model.py`. Compare results to their RandomForest. Expected outcome: similar or marginally different performance, reinforcing the Tier 2 lesson that features matter more than model choice when features are hand-crafted.
+
+- No new tests needed — existing `test_train.py` and `test_ml_bot.py` cover the pipeline. Optionally add a smoke test that `train_mlp.py` runs end-to-end.
+
+---
+
+### Step 16: PyTorch Training Scaffold
+
+Create `hearts/ml/neural.py` and `scripts/train_neural.py`:
+
+This step introduces PyTorch with a **fully provided training scaffold**. Students read and understand the code but do not need to write the training loop. The scaffold is deliberately simple and heavily commented.
+
+#### `hearts/ml/neural.py`:
+
+- **`HeartsDataset(torch.utils.data.Dataset)`**: loads `play_decisions.jsonl`, applies a `FeatureExtractor`, returns `(feature_tensor, label, legal_moves_mask)` tuples
+- **`HeartsNet(nn.Module)`**: a simple feedforward network
+  - Default architecture: `input_dim → 128 → ReLU → 64 → ReLU → 52`
+  - Forward pass returns raw logits (52-dim)
+  - The architecture is defined in a single `nn.Sequential` block that students will later modify
+- **`MaskedCrossEntropyLoss`**: applies legal-move masking before computing cross-entropy. Sets logits for illegal moves to `-inf` before softmax. This is a key teaching moment — the model only learns from legal moves.
+- **`train_neural(data_dir, extractor, net, epochs, batch_size, lr, seed) -> tuple[HeartsNet, dict]`**:
+  - Standard PyTorch training loop: DataLoader → forward → loss → backward → step
+  - 80/20 train/test split
+  - Tracks loss per epoch and test accuracy
+  - Returns trained model and metrics dict (same keys as Tier 2: `train_accuracy`, `test_accuracy`, `feature_importances` set to `None` since neural nets don't have built-in importance)
+  - **Heavily commented** — every block explains what's happening and why
+
+#### `hearts/bots/neural_bot.py`:
+
+- **`NeuralBot(Bot)`**: like `MLBot` but wraps a PyTorch model instead of sklearn
+  - `play_card`: extracts features → `torch.tensor` → `net.forward()` → mask illegal moves → argmax → card
+  - `pass_cards`: delegates to `pass_strategy` (same composition pattern as `MLBot`)
+  - Handles `torch.no_grad()` context for inference
+
+#### `scripts/train_neural.py`:
+
+- CLI args: `--data-dir`, `--output` (default `models/neural.pt`), `--features` (default `StudentFeatureExtractor`), `--epochs` (default 20), `--batch-size` (default 512), `--lr` (default 0.001), `--seed`
+- Prints per-epoch training loss and final train/test accuracy
+- Saves model state dict + extractor class name
+
+#### `scripts/evaluate_neural.py`:
+
+- Same interface as `evaluate_model.py` but loads a PyTorch model via `NeuralBot`
+- CLI args: `--model` (default `models/neural.pt`), `--games` (default 200), `--seed`
+- Prints the same unified report format as Tier 2 (but without feature importance section, replaced with a note that neural nets don't provide it directly)
+
+- **Student task at this step**: run `train_neural.py` with their `StudentFeatureExtractor`, evaluate, and compare to their RandomForest and sklearn MLP results. All three models use the same hand-crafted features. Expected outcome: comparable performance, establishing the baseline before Step 17 changes the input representation.
+
+**Tests:** `HeartsDataset` returns correct shapes, `HeartsNet` forward pass produces 52-dim output, `MaskedCrossEntropyLoss` correctly zeros illegal moves, `NeuralBot` always plays legal cards (fuzz test), training loop runs end-to-end on small data.
+
+---
+
+### Step 17: Raw Input Experiments
+
+Create `hearts/ml/raw_features.py`:
+
+This is the conceptual payoff. Students replace hand-crafted features with minimal raw inputs and see if the network can learn useful representations on its own.
+
+#### `hearts/ml/raw_features.py`:
+
+- **`RawFeatureExtractor(FeatureExtractor)`**: a minimal extractor with no domain engineering:
+  - Hand as 52-dim binary vector (same as basic)
+  - All cards played this round as 52-dim binary vector (same as basic)
+  - Current trick as 52-dim binary vector (no positional encoding — just 0/1)
+  - Hearts broken: 1-dim
+  - Trick number: 1-dim (normalized)
+  - Points taken per player: 4-dim
+  - Cumulative scores: 4-dim
+  - Total: ~165 features — similar count to `BasicFeatureExtractor`, but **no derived features** (no suit voids, no dangerous card tracking, nothing the student added in Tier 2). The raw binary vectors contain the same underlying information, but the network must learn to extract it.
+  - `feature_names()` returns generic names (`hand_0`, `hand_1`, ..., `played_0`, ...) since there's no semantic meaning at this level.
+
+- **Student task**: modify the `HeartsNet` architecture in their copy and experiment:
+  - Does a wider network (256 → 128 → 52) help?
+  - Does a deeper network (128 → 128 → 64 → 32 → 52) help?
+  - Does adding dropout change anything?
+  - How does `RawFeatureExtractor` + neural net compare to `StudentFeatureExtractor` + RandomForest?
+
+- **Key question for students to answer**: can the network discover features like "void in a suit" on its own? Or does hand-crafting still win? (The honest answer: for this problem size and data volume, hand-crafted features are likely competitive or better. But the exercise demonstrates the *concept* of learned representations.)
+
+No new tests needed beyond verifying `RawFeatureExtractor` produces correct shapes.
+
+---
+
+### Step 18: Comparison Analysis & Documentation
+
+Create `docs/nn_guide.md`:
+
+This is the Tier 3 lab handout, structured similarly to Tier 2's `ml_guide.md`.
+
+#### `docs/nn_guide.md` — structure:
+
+**Part 1: From Features to Learned Representations** (~1 page)
+- Recap of Tier 2: you chose what information to give the model
+- The neural network proposition: what if the model could figure out what information matters on its own?
+- Intuition for hidden layers: each layer transforms the input into a more useful representation
+
+**Part 2: The sklearn MLP** (~1 page)
+- What it is: a neural network in sklearn's familiar API
+- How to run it: copy-paste commands
+- Expected result and what it tells us (model choice alone doesn't help much)
+
+**Part 3: PyTorch Walkthrough** (~2 pages)
+- Guided code walkthrough of `neural.py`: Dataset, Model, Loss, Training loop
+- What each PyTorch concept maps to: tensors = numpy arrays on steroids, `nn.Module` = a function with learnable parameters, backpropagation = how the model updates
+- The masked cross-entropy loss: why we need it, what would happen without it
+
+**Part 4: Architecture Experiments** (~2 pages)
+- How to modify the network architecture (literally which line to change)
+- Experiments to try, with predictions:
+  - Wider first layer: might help capture more card interactions
+  - Deeper network: more abstraction, but diminishing returns on small data
+  - Dropout: regularization to prevent overfitting
+- How to read the training loss curve: what underfitting and overfitting look like
+
+**Part 5: The Big Comparison** (~1 page)
+- Students should have results for at least 4 configurations:
+  1. RandomForest + hand-crafted features (Tier 2 best)
+  2. sklearn MLP + hand-crafted features
+  3. PyTorch net + hand-crafted features
+  4. PyTorch net + raw features
+- Guiding questions: which won? Why? What does this tell us about when feature engineering matters vs. when learned representations can substitute?
+
+**Final reflection prompt**: "If you had 100× more training data and a GPU, would you expect the raw-feature neural net to overtake hand-crafted features? Why or why not?" (This connects to the broader deep learning narrative without requiring students to actually scale up.)
+
+---
+
 ## File Structure
 
 ```
@@ -583,7 +652,8 @@ hearts-project/
 │   │   ├── __init__.py
 │   │   ├── random_bot.py  # Step 6
 │   │   ├── rule_bot.py    # Step 6
-│   │   └── ml_bot.py      # Step 12
+│   │   ├── ml_bot.py      # Step 12
+│   │   └── neural_bot.py  # Step 16
 │   ├── data/
 │   │   ├── __init__.py
 │   │   ├── generator.py   # Step 9
@@ -592,7 +662,9 @@ hearts-project/
 │       ├── __init__.py
 │       ├── features.py    # Step 10 ← STUDENTS EDIT THIS FILE
 │       ├── train.py       # Step 11 (fixed, students read but don't modify)
-│       └── evaluate.py    # Step 13
+│       ├── evaluate.py    # Step 13
+│       ├── neural.py      # Step 16: PyTorch scaffold
+│       └── raw_features.py # Step 17
 ├── tests/
 │   ├── test_types.py      # Step 1
 │   ├── test_state.py      # Step 2
@@ -606,17 +678,23 @@ hearts-project/
 │   ├── test_features.py   # Step 10
 │   ├── test_train.py      # Step 11
 │   ├── test_ml_bot.py     # Step 12
-│   └── test_evaluate.py   # Step 13
+│   ├── test_evaluate.py   # Step 13
+│   ├── test_neural.py     # Step 16
+│   └── test_neural_bot.py # Step 16
 ├── scripts/
 │   ├── generate_data.py   # Step 9
 │   ├── train_model.py     # Step 11
 │   ├── evaluate_model.py  # Step 13
-│   └── run_tournament.py  # Step 7
+│   ├── run_tournament.py  # Step 7
+│   ├── train_mlp.py       # Step 15
+│   ├── train_neural.py    # Step 16
+│   └── evaluate_neural.py # Step 16
 ├── data/
 │   └── output/            # Step 9: generated game data (gitignored)
 ├── models/                # Trained model files (gitignored)
 ├── docs/
-│   ├── ml_guide.md        # Step 14: student lab handout
+│   ├── ml_guide.md        # Step 14: student lab handout (Tier 2)
+│   ├── nn_guide.md        # Step 18: neural network lab handout (Tier 3)
 │   ├── data_format.md     # Step 14: data schema reference
 │   └── api_reference.md   # Step 14: PlayerView / PassView / FeatureExtractor reference
 ├── examples/
@@ -630,9 +708,9 @@ hearts-project/
 
 **Why `PlayerView` is so detailed:** This is the bridge between Tier 1 and Tier 2. Everything a student might want as an ML feature must be accessible through `PlayerView`. By making this rich from the start, students don't need to modify the engine — they just need to decide which information to encode.
 
-**Why students only edit `features.py`:** This is their first ML course. Giving them one file to modify with a clear contract (implement `extract()` and `feature_names()`) keeps the scope manageable. The fixed model and pipeline let them focus entirely on the interesting question: what information matters?
+**Why students only edit `features.py` in Tier 2:** This is their first ML course. Giving them one file to modify with a clear contract (implement `extract()` and `feature_names()`) keeps the scope manageable. The fixed model and pipeline let them focus entirely on the interesting question: what information matters?
 
-**Why the model is fixed (RandomForest):** A good feature vector with a random forest will beat a bad feature vector with a neural net. By fixing the model, students learn that *representation is the bottleneck* — the most important lesson in applied ML. Model choice is available as an optional extension for advanced students.
+**Why the model is fixed (RandomForest) in Tier 2:** A good feature vector with a random forest will beat a bad feature vector with a neural net. By fixing the model, students learn that *representation is the bottleneck* — the most important lesson in applied ML. Model choice is available as an optional extension for advanced students, and becomes the focus in Tier 3.
 
 **Why RuleBot matters:** It sets the bar. Random is too easy to beat; a decent heuristic bot forces students to actually learn something useful from the data. It also generates better training data than RandomBot would.
 
@@ -641,3 +719,7 @@ hearts-project/
 **Why classification over legal moves, not regression:** Predicting "which card to play" as a classification task with masking to legal moves is cleaner than trying to predict card values. The masking step is a great teaching moment about constrained prediction.
 
 **Why composition for MLBot pass strategy:** `MLBot` holds a `pass_strategy: Bot` instance (defaulting to `RuleBot`) rather than inheriting from `RuleBot` or duplicating logic. This keeps the architecture clean and lets advanced students swap in a trained pass model without modifying `MLBot` itself.
+
+**Why Tier 3 starts with sklearn MLP:** It isolates the "neural network" variable from the "PyTorch" variable. Students see that switching to a neural net with the same features and familiar API doesn't magically improve results. This prevents the misconception that neural nets are universally better, and sets up the real question of Tier 3: can neural nets compensate for less feature engineering by learning representations?
+
+**Why Tier 3 is CPU-only:** The problem is genuinely small — ~20k parameters, ~500k samples. Training takes under a minute on CPU. Requiring a GPU would create access barriers and distract from the pedagogical goals. Students who want to scale up can do so on their own.

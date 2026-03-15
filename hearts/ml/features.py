@@ -42,6 +42,15 @@ class FeatureExtractor(ABC):
         Must match the length of the array returned by extract().
         """
 
+    def extract_from_record(self, record: dict) -> np.ndarray | None:
+        """Optional fast path: extract features directly from a raw dict.
+
+        Returns None to fall back to deserialize + extract(). Subclasses
+        can override this to avoid the overhead of creating Card objects
+        when the record already contains integer card indices.
+        """
+        return None
+
 
 def _extract_basic_features(
     view: PlayerView,
@@ -185,8 +194,6 @@ def _extract_basic_features(
         features.append(view.cumulative_scores[idx] / 100.0)
         names.append(f"cum_score_{label}")
 
-    return features, names
-
     # ---- What BasicFeatureExtractor does NOT capture ----
     #
     # This is your starting point for feature engineering. The basic
@@ -200,6 +207,76 @@ def _extract_basic_features(
     #   them not following suit in earlier tricks)
     # - How many cards remain in each suit in your hand
     # - Whether a shoot-the-moon attempt is in progress
+
+    return features, names
+
+
+def _extract_basic_from_record(record: dict) -> np.ndarray:
+    """Fast path: extract basic features directly from a serialized dict.
+
+    Avoids creating Card objects — works with integer card indices
+    already present in the record. Produces the same output as
+    _extract_basic_features() but ~10x faster for bulk processing.
+    """
+    features = np.zeros(223, dtype=np.float32)
+    offset = 0
+
+    # Hand (52 features)
+    for ci in record["hand"]:
+        features[offset + ci] = 1.0
+    offset += 52
+
+    # Legal plays (52 features)
+    for ci in record["legal_plays"]:
+        features[offset + ci] = 1.0
+    offset += 52
+
+    # Cards played this round (52 features)
+    for trick in record["cards_played_this_round"]:
+        for _, ci in trick:
+            features[offset + ci] = 1.0
+    offset += 52
+
+    # Current trick with positional encoding (52 features)
+    for pos, (_, ci) in enumerate(record["trick_so_far"]):
+        features[offset + ci] = (pos + 1) * 0.25
+    offset += 52
+
+    # Suit counts in hand (4 features)
+    for ci in record["hand"]:
+        features[offset + ci // 13] += 1.0
+    features[offset:offset + 4] /= 13.0
+    offset += 4
+
+    # Trick position (1 feature)
+    features[offset] = len(record["trick_so_far"]) / 3.0
+    offset += 1
+
+    # Hearts broken (1 feature)
+    features[offset] = 1.0 if record["hearts_broken"] else 0.0
+    offset += 1
+
+    # Points taken by each player (4 features, relative to current)
+    me = record["player_index"]
+    for off in range(4):
+        idx = (me + off) % 4
+        features[offset + off] = float(
+            record["points_taken_by_player"][idx]
+        )
+    offset += 4
+
+    # Trick number (1 feature)
+    features[offset] = (record["trick_number"] - 1) / 12.0
+    offset += 1
+
+    # Cumulative scores (4 features, relative to current)
+    for off in range(4):
+        idx = (me + off) % 4
+        features[offset + off] = (
+            record["cumulative_scores"][idx] / 100.0
+        )
+
+    return features
 
 
 class BasicFeatureExtractor(FeatureExtractor):
@@ -216,6 +293,9 @@ class BasicFeatureExtractor(FeatureExtractor):
     def extract(self, view: PlayerView) -> np.ndarray:
         features, _ = _extract_basic_features(view)
         return np.array(features, dtype=np.float32)
+
+    def extract_from_record(self, record: dict) -> np.ndarray:
+        return _extract_basic_from_record(record)
 
     def feature_names(self) -> list[str]:
         if self._cached_names is not None:

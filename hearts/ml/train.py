@@ -12,6 +12,7 @@ not modifying this pipeline.
 from __future__ import annotations
 
 import json
+import os
 import pickle
 import sys
 import warnings
@@ -21,6 +22,37 @@ from typing import Callable, Optional
 import numpy as np
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.model_selection import train_test_split
+
+
+def _safe_n_jobs() -> int:
+    """Choose n_jobs to avoid memory pressure from parallel RF workers.
+
+    Each worker gets a copy of the training data. With large datasets
+    on machines with limited RAM, n_jobs=-1 (all cores) can cause
+    swapping and catastrophic slowdowns. This caps parallelism so that
+    estimated memory stays under ~60% of system RAM.
+    """
+    try:
+        # Each worker needs roughly: n_samples * n_features * 8 bytes
+        # We don't know the dataset size here, so use a conservative
+        # heuristic: cap at 4 jobs, or fewer on low-memory machines.
+        n_cpus = os.cpu_count() or 1
+        # Try to read available memory (works on macOS and Linux)
+        try:
+            import resource
+            # On macOS, sysctl is more reliable
+            mem_bytes = os.sysconf("SC_PAGE_SIZE") * os.sysconf(
+                "SC_PHYS_PAGES"
+            )
+        except (ValueError, OSError, AttributeError):
+            mem_bytes = 16 * 1024**3  # assume 16 GB
+
+        mem_gb = mem_bytes / (1024**3)
+        # Allow ~1 GB per worker as a rough budget
+        max_by_mem = max(1, int(mem_gb // 4))
+        return min(n_cpus, max_by_mem, 4)
+    except Exception:
+        return 2
 
 from hearts.data.schema import deserialize_player_view
 from hearts.ml.features import FeatureExtractor
@@ -65,20 +97,46 @@ def build_dataset(
     if total == 0:
         return np.array([]), np.array([])
 
-    X_list = []
-    y_list = []
+    # Check if the extractor supports a fast path that skips
+    # deserialization (works directly on the raw dict with int indices).
+    fast = extractor.extract_from_record(records[0])
+    use_fast = fast is not None
 
-    for i, record in enumerate(records):
-        view = deserialize_player_view(record)
-        features = extractor.extract(view)
-        X_list.append(features)
-        y_list.append(record["card_played"])
-        if progress is not None and (
-            (i + 1) % 1000 == 0 or i + 1 == total
-        ):
-            progress(i + 1, total)
+    if use_fast:
+        n_features = len(fast)
+        X = np.empty((total, n_features), dtype=np.float32)
+        y = np.empty(total, dtype=np.int32)
+        X[0] = fast
+        y[0] = records[0]["card_played"]
 
-    return np.array(X_list), np.array(y_list)
+        for i in range(1, total):
+            X[i] = extractor.extract_from_record(records[i])
+            y[i] = records[i]["card_played"]
+            if progress is not None and (
+                (i + 1) % 5000 == 0 or i + 1 == total
+            ):
+                progress(i + 1, total)
+    else:
+        # Standard path: deserialize each record to PlayerView first.
+        first_view = deserialize_player_view(records[0])
+        first_features = extractor.extract(first_view)
+        n_features = len(first_features)
+
+        X = np.empty((total, n_features), dtype=np.float32)
+        y = np.empty(total, dtype=np.int32)
+        X[0] = first_features
+        y[0] = records[0]["card_played"]
+
+        for i in range(1, total):
+            view = deserialize_player_view(records[i])
+            X[i] = extractor.extract(view)
+            y[i] = records[i]["card_played"]
+            if progress is not None and (
+                (i + 1) % 5000 == 0 or i + 1 == total
+            ):
+                progress(i + 1, total)
+
+    return X, y
 
 
 def train_model(
@@ -107,12 +165,13 @@ def train_model(
         X, y, test_size=0.2, random_state=seed
     )
 
+    n_jobs = _safe_n_jobs()
     model = RandomForestClassifier(
         n_estimators=100,
         max_depth=15,
         min_samples_leaf=20,
         random_state=seed,
-        n_jobs=-1,
+        n_jobs=n_jobs,
     )
     with warnings.catch_warnings():
         warnings.filterwarnings(
@@ -139,6 +198,7 @@ def train_model(
         "n_train": len(X_train),
         "n_test": len(X_test),
         "n_features": X.shape[1],
+        "n_jobs": n_jobs,
     }
 
 

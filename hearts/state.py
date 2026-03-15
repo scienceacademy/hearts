@@ -161,7 +161,11 @@ class GameState:
 
 @dataclass
 class GameResult:
-    """Final result of a completed game."""
+    """Final result of a completed game.
+
+    When players tie for the lowest score, ``winner`` is the
+    lowest-index (seat number) player among them.
+    """
 
     final_scores: list[int]
     winner: int

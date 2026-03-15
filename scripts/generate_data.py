@@ -141,6 +141,8 @@ def main() -> None:
     def bot_factory():
         return [make_bot(cls, rng) for cls in bot_classes]
 
+    import time
+
     bots_display = ", ".join(bot_names)
     print(f"Generating data from {args.games} games...")
     print(f"Bots: {bots_display}")
@@ -149,12 +151,14 @@ def main() -> None:
         print(f"Seed: {args.seed}")
     print()
 
+    t0 = time.monotonic()
     total_play, total_pass = generate_dataset(
         n_games=args.games,
         bot_factory=bot_factory,
         output_dir=args.output_dir,
         seed=args.seed,
     )
+    elapsed = time.monotonic() - t0
 
     print()
     print("=== Summary ===")
@@ -162,6 +166,7 @@ def main() -> None:
     print(f"Bots:              {bots_display}")
     print(f"Play decisions:    {total_play}")
     print(f"Pass decisions:    {total_pass}")
+    print(f"Time:              {elapsed:.0f}s")
     print(f"Play decisions file: {args.output_dir}/play_decisions.jsonl")
     print(f"Pass decisions file: {args.output_dir}/pass_decisions.jsonl")
 
