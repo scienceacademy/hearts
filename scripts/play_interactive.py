@@ -4,6 +4,7 @@ Usage:
     python scripts/play_interactive.py
     python scripts/play_interactive.py RuleBot RuleBot RuleBot
     python scripts/play_interactive.py --seat 2 RuleBot RandomBot RuleBot
+    python scripts/play_interactive.py MLBot MLBot MLBot --model models/model.pkl
     python scripts/play_interactive.py --list
 
 Specify 3 bot names for the other seats. Defaults to 3 RuleBots.
@@ -24,6 +25,7 @@ sys.path.insert(
 import hearts.bots  # noqa: E402
 from hearts.bot import Bot  # noqa: E402
 from hearts.bots.human_bot import HumanBot  # noqa: E402
+from hearts.bots.ml_bot import MLBot, load_ml_bot  # noqa: E402
 from hearts.game import Game  # noqa: E402
 
 RESET = '\033[0m'
@@ -52,6 +54,7 @@ def make_bot(
     name: str,
     registry: dict[str, type[Bot]],
     rng: random.Random,
+    model_path: str | None = None,
 ) -> Bot:
     """Create a bot instance by name."""
     key = name.lower()
@@ -63,6 +66,11 @@ def make_bot(
         print(f"Available bots: {available}")
         sys.exit(1)
     cls = registry[key]
+    if issubclass(cls, MLBot):
+        if model_path is None:
+            print("MLBot requires --model path to a trained model file.")
+            sys.exit(1)
+        return load_ml_bot(model_path, rng=random.Random(rng.randint(0, 2**63)))
     sig = inspect.signature(cls.__init__)
     if "rng" in sig.parameters:
         return cls(rng=random.Random(rng.randint(0, 2**63)))
@@ -84,6 +92,10 @@ def main() -> None:
     parser.add_argument(
         "--seed", type=int, default=None,
         help="Random seed for reproducibility",
+    )
+    parser.add_argument(
+        "--model", type=str, default=None,
+        help="Path to trained model file (required for MLBot)",
     )
     parser.add_argument(
         "--list", "-l", action="store_true",
@@ -110,7 +122,7 @@ def main() -> None:
     seat = args.seat
     human = HumanBot(seat)
 
-    opponents = [make_bot(n, registry, rng) for n in bot_names]
+    opponents = [make_bot(n, registry, rng, args.model) for n in bot_names]
     bots: list[Bot] = []
     names: list[str] = []
     opp_idx = 0
