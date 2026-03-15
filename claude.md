@@ -237,27 +237,108 @@ Create `hearts/tournament.py`:
 
 ### Step 9: Game Data Generation & Storage
 
-Create `hearts/data/generator.py` and `hearts/data/schema.py`:
+Create `hearts/data/schema.py`, `hearts/data/generator.py`, and `scripts/generate_data.py`.
 
-- **Data schema** — each record represents one `play_card` decision point and stores:
-  - **The full `PlayerView`** serialized as JSON (all fields — hand, trick_so_far, cards_played_this_round, points_taken_by_player, etc.). This is the raw input that feature extractors will read.
-  - **Label/target**: the card index (0–51) that was played
-  - **Outcome annotations** (added after the game completes):
-    - `points_this_trick`: int (points in the trick where this card was played)
-    - `round_score`: int (this player's total points for the round)
-    - `game_rank`: int (1–4, this player's finishing position in the game)
+#### Card Index Mapping
 
-- **Pass decision data** (separate file, for optional extension only):
-  - The full `PassView` serialized as JSON
-  - Label: the 3 card indices passed
-  - Outcome: round score, game rank
+Cards are represented as integers 0–51 using the mapping: `index = suit_ordinal * 13 + (rank - 2)`, where suit ordinals are CLUBS=0, DIAMONDS=1, SPADES=2, HEARTS=3 and ranks are 2–14 (J=11, Q=12, K=13, A=14).
 
-- **Generator architecture**: uses a `RecordingBot` wrapper that wraps any `Bot` instance, intercepts `pass_cards` and `play_card` calls, records the `PassView`/`PlayerView` and the chosen action, then delegates to the inner bot. The generator wraps the `Game` class to run N complete games. After each game completes, it annotates each recorded decision with outcome data from `GameResult`/`RoundResult`. Serializes to JSON Lines format.
-- **Output location**: `data/output/` directory (gitignored). Default filenames: `play_decisions.jsonl` and `pass_decisions.jsonl`
-- **Script** (`scripts/generate_data.py`): CLI with `--games` (default 10000), `--output-dir` (default `data/output/`), `--seed` for reproducibility. Runs 4× RuleBot by default.
-- Pre-generate a provided dataset: ~10,000 games → ~520,000 play decisions + ~40,000 pass decisions
+Examples: 0 = 2♣, 12 = A♣, 13 = 2♦, 37 = Q♠, 51 = A♥.
 
-**Tests:** Schema validation, generated data can be loaded and all expected fields are present, round-trip: load a record and reconstruct a valid `PlayerView` from it.
+`schema.py` provides `card_to_index(card: Card) -> int` and `index_to_card(index: int) -> Card`.
+
+#### Play Decision Record (`play_decisions.jsonl`)
+
+Each line is a JSON object mirroring `PlayerView` fields, plus a label and outcome annotations. Example:
+
+```json
+{
+  "player_index": 2,
+  "trick_number": 4,
+  "hand": [0, 3, 7, 15, 22, 28, 31, 40, 44, 51],
+  "legal_plays": [0, 3, 7],
+  "trick_so_far": [[0, 19], [1, 23]],
+  "lead_suit": "DIAMONDS",
+  "hearts_broken": true,
+  "is_first_trick": false,
+  "cards_played_this_round": [
+    [[0, 0], [1, 12], [2, 25], [3, 38]],
+    [[3, 39], [0, 11], [1, 50], [2, 24]],
+    [[1, 19], [3, 48], [0, 36], [2, 10]]
+  ],
+  "tricks_won_by_player": [1, 1, 1, 0],
+  "points_taken_by_player": [0, 1, 0, 0],
+  "pass_direction": "LEFT",
+  "cards_received_in_pass": [3, 15, 44],
+  "cumulative_scores": [22, 45, 18, 31],
+  "round_number": 4,
+
+  "card_played": 7,
+
+  "points_this_trick": 0,
+  "round_score": 3,
+  "game_rank": 1
+}
+```
+
+Field notes:
+- `trick_so_far`: list of `[player_index, card_index]` pairs in play order — the in-progress trick
+- `cards_played_this_round`: list of completed tricks, each a list of 4 `[player_index, card_index]` pairs in play order. Trick number is implicit (array index + 1). Does **not** include the current in-progress trick (that's `trick_so_far`)
+- `lead_suit`: string name of suit enum, or `null` if this player is leading
+- `pass_direction`: string — `"LEFT"`, `"RIGHT"`, `"ACROSS"`, or `"NONE"`
+- `cards_received_in_pass`: list of 3 card indices, or `[]` during No Pass rounds
+- **Label**: `card_played` — the card index (0–51) that was played
+- **Outcome annotations** (added after game completes): `points_this_trick`, `round_score`, `game_rank` (1–4, 1 = best)
+
+#### Pass Decision Record (`pass_decisions.jsonl`)
+
+Each line mirrors `PassView` fields. Example:
+
+```json
+{
+  "player_index": 2,
+  "hand": [0, 3, 7, 12, 15, 22, 28, 31, 40, 44, 47, 49, 51],
+  "pass_direction": "LEFT",
+  "cumulative_scores": [22, 45, 18, 31],
+  "round_number": 4,
+
+  "cards_passed": [47, 49, 51],
+
+  "round_score": 3,
+  "game_rank": 1
+}
+```
+
+#### `hearts/data/schema.py`
+
+- `card_to_index(card: Card) -> int` and `index_to_card(index: int) -> Card`
+- `serialize_player_view(view: PlayerView) -> dict` — converts to JSON-safe dict using index mapping. `cards_played_this_round` is restructured from flat `(trick_num, player_index, Card)` tuples into the nested-by-trick format shown above.
+- `deserialize_player_view(data: dict) -> PlayerView` — reconstructs a `PlayerView`, flattening the nested trick structure back to `(trick_num, player_index, Card)` tuples.
+- `serialize_pass_view(view: PassView) -> dict`
+- `deserialize_pass_view(data: dict) -> PassView`
+
+#### `hearts/data/generator.py`
+
+- `RecordingBot(Bot)` — wraps any `Bot` instance. Intercepts `pass_cards` and `play_card` calls: records the serialized view and the chosen action, then delegates to the inner bot. Stores records in memory as a list per game.
+- `generate_game_data(bots: list[Bot], seed) -> tuple[GameResult, list[dict], list[dict]]` — wraps the 4 bots in `RecordingBot`s, runs one `Game`, then annotates each recorded decision with outcome data (`points_this_trick`, `round_score`, `game_rank`) from the `GameResult` and `RoundResult` objects. Returns the game result plus the annotated play and pass records.
+- `generate_dataset(n_games, bot_factory, output_dir, seed)` — runs N games, writes `play_decisions.jsonl` and `pass_decisions.jsonl` line by line. Prints progress to stdout.
+
+#### `scripts/generate_data.py`
+
+CLI entry point:
+- `--games` (default 10000)
+- `--output-dir` (default `data/output/`)
+- `--seed` (default: none, for reproducibility)
+- Runs 4× RuleBot by default
+- Prints summary on completion: number of games, total play decisions, total pass decisions, output file paths
+
+**Tests (`tests/test_schema.py` and `tests/test_generator.py`):**
+- **Schema round-trip**: serialize a `PlayerView` → JSON string → deserialize → compare all fields to original
+- **Schema round-trip for `PassView`**
+- **Card index mapping**: `index_to_card(card_to_index(card)) == card` for all 52 cards
+- **Generator record count**: run a small game (e.g., 2 games with seeded RNG), verify number of play records = total cards played (52 per round × num_rounds per game × num_games), number of pass records = expected count (accounting for No Pass rounds)
+- **Outcome annotation correctness**: verify `round_score` sums to 26 (or 78 on shoot-the-moon) per round across all 4 players, `game_rank` values are 1–4 with correct ordering
+- **JSONL format**: records can be loaded with `json.loads()` line by line
 
 ---
 
@@ -520,6 +601,7 @@ hearts-project/
 │   ├── test_game.py       # Step 5
 │   ├── test_bots.py       # Step 6
 │   ├── test_tournament.py # Step 7
+│   ├── test_schema.py     # Step 9
 │   ├── test_generator.py  # Step 9
 │   ├── test_features.py   # Step 10
 │   ├── test_train.py      # Step 11

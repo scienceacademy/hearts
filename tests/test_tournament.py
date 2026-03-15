@@ -19,7 +19,7 @@ class TestTournamentBasic:
             num_games=10,
             rng=random.Random(42),
         )
-        result = t.run()
+        result = t.run(parallel=False)
         assert result.num_games == 10
 
     def test_all_bots_have_stats(self):
@@ -33,7 +33,7 @@ class TestTournamentBasic:
             num_games=10,
             rng=random.Random(42),
         )
-        result = t.run()
+        result = t.run(parallel=False)
         assert "Rule" in result.stats
         assert "Random" in result.stats
 
@@ -48,7 +48,7 @@ class TestTournamentBasic:
             num_games=20,
             rng=random.Random(42),
         )
-        result = t.run()
+        result = t.run(parallel=False)
         total_wins = sum(s.wins for s in result.stats.values())
         assert total_wins == 20
 
@@ -63,7 +63,7 @@ class TestTournamentBasic:
             num_games=20,
             rng=random.Random(42),
         )
-        result = t.run()
+        result = t.run(parallel=False)
         # Each bot plays in every game, occupying 2 seats
         for s in result.stats.values():
             assert s.games == 40  # 20 games * 2 seats each
@@ -83,7 +83,7 @@ class TestTournamentDeterministic:
                 num_games=10,
                 rng=random.Random(42),
             )
-            results.append(t.run())
+            results.append(t.run(parallel=False))
         for name in results[0].stats:
             assert (
                 results[0].stats[name].wins
@@ -106,7 +106,7 @@ class TestTournamentRotation:
             num_games=4,
             rng=random.Random(42),
         )
-        result = t.run()
+        result = t.run(parallel=False)
         # Both bots should have played games
         for s in result.stats.values():
             assert s.games > 0
@@ -124,7 +124,7 @@ class TestTournamentSummary:
             num_games=5,
             rng=random.Random(42),
         )
-        result = t.run()
+        result = t.run(parallel=False)
         summary = result.summary()
         assert "Rule" in summary
         assert "Random" in summary
@@ -143,7 +143,7 @@ class TestTournamentStats:
             num_games=10,
             rng=random.Random(42),
         )
-        result = t.run()
+        result = t.run(parallel=False)
         for s in result.stats.values():
             assert 0.0 <= s.win_rate <= 1.0
 
@@ -158,7 +158,7 @@ class TestTournamentStats:
             num_games=10,
             rng=random.Random(42),
         )
-        result = t.run()
+        result = t.run(parallel=False)
         for s in result.stats.values():
             assert s.avg_score > 0
 
@@ -173,7 +173,7 @@ class TestTournamentStats:
             num_games=10,
             rng=random.Random(42),
         )
-        result = t.run()
+        result = t.run(parallel=False)
         for s in result.stats.values():
             assert len(s.scores) == s.games
 
@@ -201,7 +201,7 @@ class TestTournamentEdgeCases:
             num_games=100,
             rng=random.Random(42),
         )
-        result = t.run()
+        result = t.run(parallel=False)
         assert (
             result.stats["Rule"].win_rate
             > result.stats["Random"].win_rate

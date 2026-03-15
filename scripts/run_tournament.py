@@ -26,6 +26,10 @@ def main() -> None:
         "--seed", type=int, default=None,
         help="Random seed for reproducibility",
     )
+    parser.add_argument(
+        "--parallel", action="store_true", default=False,
+        help="Run games in parallel (default: sequential)",
+    )
     args = parser.parse_args()
 
     rng = random.Random(args.seed)
@@ -39,7 +43,11 @@ def main() -> None:
         num_games=args.games,
         rng=rng,
     )
-    result = t.run()
+    mode = "parallel" if args.parallel else "sequential"
+    print(
+        f"Running {args.games} games ({mode} mode)..."
+    )
+    result = t.run(parallel=args.parallel)
     print(result.summary())
 
 
