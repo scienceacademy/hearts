@@ -101,7 +101,7 @@ def main() -> None:
     parser.add_argument(
         "--games",
         type=int,
-        default=10000,
+        default=3000,
         help="Number of games to simulate (default: 10000)",
     )
     parser.add_argument(
