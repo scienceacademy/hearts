@@ -65,7 +65,25 @@ Your workflow is a loop:
    ```
 4. Read the report, think about what to try next, repeat.
 
-### First-Time Setup
+### Environment Setup
+
+You need Python 3.11 or later. To check your version:
+
+```bash
+python3 --version
+```
+
+Create a virtual environment and install the project with its ML dependencies:
+
+```bash
+python3 -m venv .venv
+source .venv/bin/activate   # On Windows: .venv\Scripts\activate
+pip3 install -e ".[ml,dev]"
+```
+
+This installs the Hearts game engine in editable mode along with numpy, scikit-learn, matplotlib (for ML), and pytest, ruff (for development). You only need to do this once. In future terminal sessions, reactivate the environment with `source .venv/bin/activate`.
+
+### Generate Training Data
 
 Before your first training run, generate the training data (this takes a few minutes):
 
